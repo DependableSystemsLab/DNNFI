@@ -1,0 +1,312 @@
+/*
+   Copyright (c) 2016, Taiga Nomi
+   All rights reserved.
+
+   Redistribution and use in source and binary forms, with or without
+   modification, are permitted provided that the following conditions are met:
+ * Redistributions of source code must retain the above copyright
+ notice, this list of conditions and the following disclaimer.
+ * Redistributions in binary form must reproduce the above copyright
+ notice, this list of conditions and the following disclaimer in the
+ documentation and/or other materials provided with the distribution.
+ * Neither the name of the <organization> nor the
+ names of its contributors may be used to endorse or promote products
+ derived from this software without specific prior written permission.
+
+ THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY
+ EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+ WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY
+ DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+ (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+ LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+ ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+#include <iostream>
+#include <memory>
+#include <ctime>
+
+#define CNN_USE_CAFFE_CONVERTER
+#include "tiny_cnn/tiny_cnn.h"
+
+using namespace tiny_cnn;
+using namespace tiny_cnn::activation;
+using namespace std;
+
+#include <opencv2/imgcodecs.hpp>
+#include <opencv2/core/core.hpp>
+#include <opencv2/highgui/highgui.hpp>
+#include <opencv2/imgproc/imgproc.hpp>
+#include "caffe.pb.h"
+#include "emodels/cfi_injection.cpp"
+
+int totalImgNumber = 1; // Define how many image inputs
+
+
+cv::Mat compute_mean(const string& mean_file, int width, int height)
+{
+	caffe::BlobProto blob;
+	detail::read_proto_from_binary(mean_file, &blob);
+
+	vector<cv::Mat> channels;
+	auto data = blob.mutable_data()->mutable_data();
+
+	for (int i = 0; i < blob.channels(); i++, data += blob.height() * blob.width())
+		channels.emplace_back(blob.height(), blob.width(), CV_32FC1, data);
+
+	cv::Mat mean;
+	cv::merge(channels, mean);
+
+	return cv::Mat(cv::Size(width, height), mean.type(), cv::mean(mean));
+}
+
+cv::ColorConversionCodes get_cvt_codes(int src_channels, int dst_channels)
+{
+	assert(src_channels != dst_channels);
+
+	if (dst_channels == 3)
+		return src_channels == 1 ? cv::COLOR_GRAY2BGR : cv::COLOR_BGRA2BGR;
+	else if (dst_channels == 1)
+		return src_channels == 3 ? cv::COLOR_BGR2GRAY : cv::COLOR_BGRA2GRAY;
+	else
+		throw runtime_error("unsupported color code");
+}
+
+void preprocess(const cv::Mat& img,
+		const cv::Mat& mean,
+		int num_channels,
+		cv::Size geometry,
+		vector<cv::Mat>* input_channels)
+{
+	cv::Mat sample;
+
+	// convert color
+	if (img.channels() != num_channels)
+		cv::cvtColor(img, sample, get_cvt_codes(img.channels(), num_channels));
+	else
+		sample = img;
+
+	// resize
+	cv::Mat sample_resized;
+	cv::resize(sample, sample_resized, geometry);
+
+	cv::Mat sample_float;
+	sample_resized.convertTo(sample_float, num_channels == 3 ? CV_32FC3 : CV_32FC1);
+
+	// subtract mean
+	if (mean.size().width > 0) {
+		cv::Mat sample_normalized;
+		cv::subtract(sample_float, mean, sample_normalized);
+		cv::split(sample_normalized, *input_channels);
+	}
+	else {
+		cv::split(sample_float, *input_channels);
+	}
+}
+
+vector<string> get_label_list(const string& label_file)
+{
+	string line;
+	ifstream ifs(label_file.c_str());
+
+	if (ifs.fail() || ifs.bad())
+		throw runtime_error("failed to open:" + label_file);
+
+	vector<string> lines;
+	while (getline(ifs, line))
+		lines.push_back(line);
+
+	return lines;
+}
+
+void load_validation_data(const std::string& validation_file,
+		std::vector<std::pair<std::string, int>>* validation) {
+	string line;
+	ifstream ifs(validation_file.c_str());
+
+	if (ifs.fail() || ifs.bad()) {
+		throw runtime_error("failed to open:" + validation_file);
+	}
+
+	vector<string> lines;
+	while (getline(ifs, line)) {
+		lines.push_back(line);
+	}
+}
+
+void test(const string& model_file,
+		const string& trained_file,
+		const string& mean_file,
+		const string& label_file,
+		const string& img_file,
+		const string& input_folder)
+
+{
+	auto labels = get_label_list(label_file);
+	auto net = create_net_from_caffe_prototxt(model_file);
+	reload_weight_from_caffe_protobinary(trained_file, net.get());
+
+	int channels = (*net)[0]->in_data_shape()[0].depth_;
+	int width = (*net)[0]->in_data_shape()[0].width_;
+	int height = (*net)[0]->in_data_shape()[0].height_;
+
+	std::vector<std::pair<std::string, int>> validation(1);
+	//load_validation_data(img_file, &validation);
+
+	auto mean = compute_mean(mean_file, width, height);
+
+
+	for( int k =0 ; k< totalImgNumber; k++){
+
+		std::cout << "\n**** Current Image: "<< k << "/" << totalImgNumber <<" ****\n";
+
+		// Call to transfer current input file image
+		system( ("python mv_input.py " + std::to_string(k) + " " + input_folder).c_str() );
+		load_validation_data(img_file, &validation);
+
+		
+
+#ifdef INJECTION
+		if(profile_in_fi_flag == 1){
+			std::cout << "\n**** Derive Golden Data in Memory ****\n";
+			// Only to derive golden data in injection run and save it to memory/
+			cv::Mat img = cv::imread(img_file, -1);
+			//cv::Mat img = cv::imread(validation[i].first, -1);
+
+			vector<float> inputvec(width*height*channels);
+			vector<cv::Mat> input_channels;
+
+			for (int i = 0; i < channels; i++)
+				input_channels.emplace_back(height, width, CV_32FC1, &inputvec[width*height*i]);
+
+			preprocess(img, mean, 3, cv::Size(width, height), &input_channels);
+
+			vector<tiny_cnn::float_t> vec(inputvec.begin(), inputvec.end());
+
+			clock_t begin = clock();
+
+			auto result = net->predict(vec);
+
+			clock_t end = clock();
+			double elapsed_secs = double(end - begin) / CLOCKS_PER_SEC;
+			cout <<"Elapsed time(s): " << elapsed_secs << endl;
+
+			vector<tiny_cnn::float_t> sorted(result.begin(), result.end());
+
+			int top_n = 20;
+			partial_sort(sorted.begin(), sorted.begin()+top_n, sorted.end(), greater<tiny_cnn::float_t>());
+
+			ofstream ref;
+			ref.open("golden_result.txt", ios::app);
+			for (int i = 0; i < top_n; i++) {
+				size_t idx = distance(result.begin(), find(result.begin(), result.end(), sorted[i]));
+				cout << i << ": " << labels[idx] << "," << sorted[i] << endl;
+				ref << i << ": " << labels[idx] << "," << sorted[i] << endl;
+			}
+			ref.close();
+
+			/*
+			   std::cout << "\n**** Size of golden in vec: " << gInVec.size() << "\n";
+			   std::cout << "\n**** Size of golden w vec: " << gWVec.size() << "\n";
+			   std::cout << "\n**** Size of golden a vec: " << gAVec.size() << "\n";
+			   std::cout << "\n**** Size of golden out vec: " << gOutVec.size() << "\n";
+			   */
+			std::cout << "\n**** End of Profiling in FI ****\n";
+			profile_in_fi_flag = 0;
+		}
+#endif
+
+
+
+		for( int j=0; j < 1; j++){ // 1 FI per each image input
+#ifdef INJECTION
+			resetFi();
+			//std::cout << "\n**** FI Run " << j << " ****\n";
+#endif
+
+
+
+			cv::Mat img = cv::imread(img_file, -1);
+			//cv::Mat img = cv::imread(validation[i].first, -1);
+
+			vector<float> inputvec(width*height*channels);
+			vector<cv::Mat> input_channels;
+
+			for (int i = 0; i < channels; i++)
+				input_channels.emplace_back(height, width, CV_32FC1, &inputvec[width*height*i]);
+
+			preprocess(img, mean, 3, cv::Size(width, height), &input_channels);
+
+			vector<tiny_cnn::float_t> vec(inputvec.begin(), inputvec.end());
+
+			clock_t begin = clock();
+		
+			std::cout << "\n**** Inferencing ****\n";
+			auto result = net->predict(vec);
+
+			clock_t end = clock();
+			double elapsed_secs = double(end - begin) / CLOCKS_PER_SEC;
+			cout <<"Elapsed time(s): " << elapsed_secs << endl;
+
+			vector<tiny_cnn::float_t> sorted(result.begin(), result.end());
+
+			int top_n = 20;
+			partial_sort(sorted.begin(), sorted.begin()+top_n, sorted.end(), greater<tiny_cnn::float_t>());
+
+			ofstream ref;
+			ref.open("result.txt", ios::app);
+			for (int i = 0; i < top_n; i++) {
+				size_t idx = distance(result.begin(), find(result.begin(), result.end(), sorted[i]));
+				cout << i << ": " << labels[idx] << "," << sorted[i] << endl;
+				ref << i << ": " << labels[idx] << "," << sorted[i] << endl;
+			}
+			ref.close();
+#ifdef INJECTION
+			// All f vecs are in place. Calculate data we want to save.		
+			dumpLastLayerA();	
+			dumpLastLayerOut();	
+			dumpEachLayerEuclidean();
+			dumpEachLayerDiffTime();
+			dumpEachLayerSpread();
+			clearAllVec();
+
+			// Call to transfer current fi files.
+			system( ("python inject_mover.py " + std::to_string(k) + " " + input_folder).c_str() );
+
+			profile_in_fi_flag = 1;
+			fInVec.clear();
+			fWVec.clear();
+			fAVec.clear();
+			fOutVec.clear();
+			gInVec.clear();
+			gWVec.clear();
+			gAVec.clear();
+			gOutVec.clear();
+#endif	
+	
+		}
+	}
+}
+
+int main(int argc, char** argv) {
+	int arg_channel = 1;
+	string model_file = argv[arg_channel++];
+	string trained_file = argv[arg_channel++];
+	string mean_file = argv[arg_channel++];
+	string label_file = argv[arg_channel++];
+	string img_file = argv[arg_channel++];
+	totalImgNumber = atoll(argv[arg_channel++]);
+	string input_folder = argv[arg_channel++];
+
+	fiLayerNo = atoi(argv[arg_channel++]);
+	fiInstIndex = atoi(argv[arg_channel++]);
+
+
+	try {
+		test(model_file, trained_file, mean_file, label_file, img_file, input_folder);
+	} catch (const nn_error& e) {
+		cout << e.what() << endl;
+	}
+}

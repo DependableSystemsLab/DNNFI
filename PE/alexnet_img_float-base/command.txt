@@ -1,0 +1,12 @@
+python profile_wrapper.py ./caffe_converter/caffe_converter.cpp "./bvlc_alexnet/deploy.prototxt bvlc_alexnet/bvlc_alexnet.caffemodel ./data/ilsvrc12/imagenet_mean.binaryproto ./data/ilsvrc12/synset_words.txt ./imagenet/ILSVRC2012_test_00075049.JPEG"
+
+python inject_wrapper.py ./caffe_converter/caffe_converter.cpp "./bvlc_alexnet/deploy.prototxt bvlc_alexnet/bvlc_alexnet.caffemodel ./data/ilsvrc12/imagenet_mean.binaryproto ./data/ilsvrc12/synset_words.txt ./imagenet/ILSVRC2012_test_00075049.JPEG 5"
+
+
+
+
+#####################
+
+g++ -O4 -std=c++11 -I /usr/include -I ./caffe_converter/ -L /usr/local/lib -Wall caffe_converter/caffe_converter.cpp ./caffe_converter/caffe.pb.cc -o caffe_converter.exe  -lprotobuf -lopencv_core -lopencv_highgui -lopencv_imgproc -lopencv_imgcodecs -lpthread -DUNIT_TESTING -DINJECTION
+
+./caffe_converter.exe ../common/bvlc_alexnet/deploy.prototxt ../common/bvlc_alexnet/bvlc_alexnet.caffemodel ../common/ilsvrc12/imagenet_mean.binaryproto ../common/ilsvrc12/synset_words.txt input.jpeg 100 ../../imagenet/ -1 -1

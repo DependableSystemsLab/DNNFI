@@ -1,0 +1,2 @@
+scl enable devtoolset-2 bash
+export LD_LIBRARY_PATH=/usr/local/lib

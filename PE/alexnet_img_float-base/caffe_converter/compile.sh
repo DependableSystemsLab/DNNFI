@@ -1,0 +1,1 @@
+g++ -g -O0 -std=c++11 -I /usr/include -I ./ -L /usr/local/lib -Wall -o converter.out caffe_converter.cpp caffe.pb.cc -lprotobuf -lopencv_core -lopencv_highgui -lopencv_imgproc -lopencv_imgcodecs -lpthread
